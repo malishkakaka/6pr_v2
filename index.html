@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+
+  <title>AR Web App</title>
+
+  <!-- A-Frame -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+  <!-- MindAR -->
+  <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+
+    #overlay {
+      position: absolute;
+      top: 20px;
+      width: 100%;
+      text-align: center;
+      color: white;
+      font-family: sans-serif;
+      font-weight: bold;
+      text-shadow: 1px 1px 2px black;
+      z-index: 99;
+      pointer-events: none;
+    }
+  </style>
+
+  <script>
+
+    AFRAME.registerComponent("gesture-detector", {
+      schema: { element: { default: "" } },
+
+      init: function () {
+        this.targetElement =
+          this.data.element && document.querySelector(this.data.element);
+        if (!this.targetElement) this.targetElement = this.el;
+
+        this.internalState = { previousState: null };
+        this.emitGestureEvent = this.emitGestureEvent.bind(this);
+
+        this.targetElement.addEventListener("touchstart", this.emitGestureEvent, { passive: true });
+        this.targetElement.addEventListener("touchend", this.emitGestureEvent, { passive: true });
+        this.targetElement.addEventListener("touchmove", this.emitGestureEvent, { passive: true });
+      },
+
+      remove: function () {
+        this.targetElement.removeEventListener("touchstart", this.emitGestureEvent);
+        this.targetElement.removeEventListener("touchend", this.emitGestureEvent);
+        this.targetElement.removeEventListener("touchmove", this.emitGestureEvent);
+      },
+
+      emitGestureEvent: function (event) {
+        const currentState = this.getTouchState(event);
+        const previousState = this.internalState.previousState;
+
+        const gestureContinues =
+          previousState &&
+          currentState &&
+          currentState.touchCount === previousState.touchCount;
+
+        const gestureEnded = previousState && !gestureContinues;
+        const gestureStarted = currentState && !gestureContinues;
+
+        if (gestureEnded) {
+          this.el.emit(
+            this.getEventPrefix(previousState.touchCount) + "fingerend",
+            previousState
+          );
+          this.internalState.previousState = null;
+        }
+
+        if (gestureStarted) {
+          currentState.startSpread = currentState.spread;
+          currentState.startPosition = currentState.position;
+          this.el.emit(
+            this.getEventPrefix(currentState.touchCount) + "fingerstart",
+            currentState
+          );
+          this.internalState.previousState = currentState;
+        }
+
+        if (gestureContinues) {
+          this.el.emit(
+            this.getEventPrefix(currentState.touchCount) + "fingermove",
+            {
+              positionChange: {
+                x: currentState.position.x - previousState.position.x,
+                y: currentState.position.y - previousState.position.y
+              },
+              spreadChange: currentState.spread - previousState.spread,
+              currentSpread: currentState.spread,
+              previousSpread: previousState.spread
+            }
+          );
+
+          this.internalState.previousState = currentState;
+        }
+      },
+
+      getTouchState: function (event) {
+        if (!event.touches || event.touches.length === 0) return null;
+
+        const touches = Array.from(event.touches);
+        const center = touches.reduce(
+          (acc, t) => ({ x: acc.x + t.clientX, y: acc.y + t.clientY }),
+          { x: 0, y: 0 }
+        );
+
+        center.x /= touches.length;
+        center.y /= touches.length;
+
+        const spread =
+          touches.reduce(
+            (acc, t) =>
+              acc +
+              Math.hypot(t.clientX - center.x, t.clientY - center.y),
+            0
+          ) / touches.length;
+
+        return {
+          touchCount: touches.length,
+          position: center,
+          spread
+        };
+      },
+
+      getEventPrefix: function (count) {
+        return ["one", "two", "three", "many"][Math.min(count, 4) - 1];
+      }
+    });
+
+    AFRAME.registerComponent("gesture-handler", {
+      schema: {
+        rotationFactor: { default: 5 },
+        minScale: { default: 0.01 },
+        maxScale: { default: 8 }
+      },
+
+      init: function () {
+        this.scaleFactor = 1;
+        this.initialScale = this.el.object3D.scale.clone();
+        this.isVisible = false;
+
+        const target = this.el.closest("[mindar-image-target]");
+        if (target) {
+          target.addEventListener("targetFound", () => (this.isVisible = true));
+          target.addEventListener("targetLost", () => (this.isVisible = false));
+        }
+
+        this.el.sceneEl.addEventListener("onefingermove", this.rotate.bind(this));
+        this.el.sceneEl.addEventListener("twofingermove", this.scale.bind(this));
+      },
+
+      rotate: function (e) {
+        if (!this.isVisible) return;
+        this.el.object3D.rotation.y +=
+          e.detail.positionChange.x * this.data.rotationFactor * 0.005;
+      },
+
+      scale: function (e) {
+        if (!this.isVisible) return;
+
+        const ratio =
+          e.detail.previousSpread > 0
+            ? e.detail.currentSpread / e.detail.previousSpread
+            : 1;
+
+        this.scaleFactor = Math.min(
+          this.data.maxScale,
+          Math.max(this.data.minScale, this.scaleFactor * ratio)
+        );
+
+        this.el.object3D.scale.set(
+          this.initialScale.x * this.scaleFactor,
+          this.initialScale.y * this.scaleFactor,
+          this.initialScale.z * this.scaleFactor
+        );
+      }
+    });
+  </script>
+</head>
+
+<body>
+  <div id="overlay">
+    1 палец — вращение<br />
+    2 пальца — масштаб
+  </div>
+
+  <a-scene
+    mindar-image="imageTargetSrc: targets.mind;"
+    vr-mode-ui="enabled: false"
+    device-orientation-permission-ui="enabled: false"
+    renderer="colorManagement: true"
+    gesture-detector>
+
+    <a-assets>
+      <a-asset-item id="model" src="model.glb"></a-asset-item>
+    </a-assets>
+
+    <a-camera look-controls="enabled: false"></a-camera>
+
+    <a-entity mindar-image-target="targetIndex: 0">
+      <a-gltf-model
+        src="#model"
+        position="0 -0.25 0"
+        scale="0.05 0.05 0.05"
+        gesture-handler>
+      </a-gltf-model>
+    </a-entity>
+
+  </a-scene>
+</body>
+</html>
